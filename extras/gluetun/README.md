@@ -13,8 +13,10 @@ it goes out with every minute, as a download client would. Your other containers
 2. `cp .env.example .env` and put your WireGuard private key in `.env`
    (account.proton.me → VPN → WireGuard → create a configuration → the value after `PrivateKey =`).
    Keep it private: it stays in `.env`, which Git ignores.
-3. Make a key for the dashboard: `docker run --rm qmcgaw/gluetun genkey`, and put it in `auth/config.toml`
-   in place of `REPLACE-WITH-YOUR-KEY`.
+3. Make a key for the dashboard: `docker run --rm qmcgaw/gluetun genkey`. It prints a line of about 22 letters and
+   digits (the first run also shows Docker downloading the image). Open `auth/config.toml` in a text editor (no
+   `sudo` needed) and put that key in place of `REPLACE-WITH-YOUR-KEY`, keeping the quotes. Check with
+   `grep '^apikey' auth/config.toml`.
 4. `docker compose up -d`, then `docker compose logs -f gluetun` until it says the VPN is up (Ctrl+C to stop
    watching). `docker compose logs behind-vpn` shows the VPN's address and provider, not yours.
 
