@@ -920,7 +920,10 @@ class Gluetun(VPNCheck):
     def test_no_answer_is_unknown_and_switched_off_is_off(self):
         server.VPN["gluetun_key"] = "wrong"
         server.read_vpn()
-        self.assertEqual((server.state["vpn"]["status"], server.state["vpn"]["why"]), ("unknown", "no answer from gluetun"))
+        self.assertEqual((server.state["vpn"]["status"], server.state["vpn"]["why"]), ("unknown", "gluetun refused the API key"))
+        server.VPN["gluetun_url"] = "http://127.0.0.1:1"  # nothing there
+        server.read_vpn()
+        self.assertEqual(server.state["vpn"]["why"], "no answer from gluetun")
         self.assertFalse(any(a["source"] == "VPN" for a in server.alerts()))
 
     def test_settings_check_now_and_saving(self):

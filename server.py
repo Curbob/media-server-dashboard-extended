@@ -1072,8 +1072,10 @@ def read_vpn():
             look = vpn_lookup()
             status = vpn_verdict(look, VPN.get("home_asn") or "", VPN.get("home_provider") or "")
             why = f"traffic is leaving through your home connection ({look['provider']})" if status == "down" else ""
-    except FAIL:
-        state["vpn"] = {**state["vpn"], "status": "unknown", "why": "no answer from gluetun" if gluetun else "no answer from the check"}
+    except FAIL as e:
+        refused = isinstance(e, urllib.error.HTTPError) and e.code in (401, 403)
+        why = ("gluetun refused the API key" if refused else "no answer from gluetun") if gluetun else "no answer from the check"
+        state["vpn"] = {**state["vpn"], "status": "unknown", "why": why}
         return
     state["vpn"] = {"status": status, "provider": look.get("provider", ""), "country": look.get("country", ""), "why": why, "via": "gluetun" if gluetun else ""}
     if status == "down" and before != "down":
