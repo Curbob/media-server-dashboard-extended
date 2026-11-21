@@ -758,8 +758,80 @@ const desks = DESKS.map(([x, z], i) => {
   rbox(0.58, 0.55, 0.1, 0.05, chairC, 0, 0.82, 0.3, chair).rotation.x = -0.08;
   cyl(0.025, 0.025, 0.3, '#4a4f61', 0, 0.55, 0.3, chair, 10);
   for (const sx of [-0.32, 0.32]) { rbox(0.06, 0.04, 0.32, 0.02, '#4a4f61', sx, 0.66, 0.05, chair); cyl(0.015, 0.015, 0.16, '#4a4f61', sx, 0.58, 0.12, chair, 8); }
-  return { screenMat };
+  return { screenMat, group: d };
 });
+
+// ---------- Plex's projector: on whichever desk the Plex worker sits at, it shows what is streaming ----------
+const PROJECTOR_KINDS = ['plex'];
+function makeProjector(d) {
+  const font = '-apple-system, Helvetica, sans-serif';
+  const tex = canvasTexture(512, 300, (g, w, h, title = '') => {
+    if (!title) { g.fillStyle = '#ece8e0'; g.fillRect(0, 0, w, h); return; }  // off: a plain screen
+    const glow = g.createRadialGradient(w / 2, h / 2, 30, w / 2, h / 2, w * 0.62);
+    glow.addColorStop(0, '#fff7e0'); glow.addColorStop(1, '#f3b878');
+    g.fillStyle = glow; g.fillRect(0, 0, w, h);
+    g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.fillStyle = '#c4531c'; g.font = `800 30px ${font}`;
+    g.fillText('▶ NOW SHOWING', w / 2, 46);
+    // the title as big as fits: two lines at most, smaller type for long ones
+    g.fillStyle = '#2a2a30';
+    let size = 76, lines;
+    do {
+      g.font = `800 ${size}px ${font}`;
+      lines = [];
+      for (const word of title.split(' ')) {
+        const last = lines[lines.length - 1];
+        if (last !== undefined && g.measureText(last + ' ' + word).width < w - 40) lines[lines.length - 1] = last + ' ' + word;
+        else lines.push(word);
+      }
+      size -= 6;
+    } while ((lines.length > 2 || lines.some((l) => g.measureText(l).width > w - 40)) && size > 34);
+    if (lines.length > 2) { lines.length = 2; lines[1] = lines[1].replace(/\s*\S*$/, '') + ' …'; }
+    const lh = size + 10;
+    lines.forEach((l, i) => g.fillText(l, w / 2, 172 + (i - (lines.length - 1) / 2) * lh));
+  });
+  const g = group(0, 0, 0, d);
+  // the projector on the right of the desk, its lens to the back
+  rbox(0.34, 0.13, 0.3, 0.03, '#2a2a30', 0.85, 0.875, 0.04, g);
+  box(0.35, 0.025, 0.31, '#f2762e', 0.85, 0.875, 0.04, g);  // an orange band round the middle
+  for (let i = 0; i < 4; i++) box(0.012, 0.006, 0.16, '#55585f', 0.76 + i * 0.03, 0.942, 0.08, g);  // vent slots
+  const lens = cyl(0.058, 0.058, 0.05, '#1b1b1f', 0.85, 0.875, -0.13, g); lens.rotation.x = Math.PI / 2;
+  const glassMat = mat('#3a4560', { emissive: '#fff1c8', emissiveIntensity: 0, roughness: 0.2 });
+  const glass = cyl(0.042, 0.042, 0.012, glassMat, 0.85, 0.875, -0.157, g); glass.rotation.x = Math.PI / 2;
+  // a roll-up screen on a stand behind the desk
+  const SX = 0.85, SY = 1.98, SZ = -0.86;
+  for (let a = 0; a < 3; a++) {  // tripod feet
+    const leg = rbox(0.03, 0.02, 0.32, 0.01, '#3a3f52', 0, 0.02, 0.14, group(SX, 0, SZ - 0.04, g, a / 3 * Math.PI * 2 + 0.5));
+    leg.castShadow = false;
+  }
+  cyl(0.018, 0.018, 2.42, '#3a3f52', SX, 1.21, SZ - 0.04, g, 12);
+  const roll = cyl(0.05, 0.05, 1.3, '#2a2a30', SX, SY + 0.39, SZ, g, 16); roll.rotation.z = Math.PI / 2;
+  rbox(1.22, 0.03, 0.03, 0.01, '#2a2a30', SX, SY - 0.37, SZ, g);  // the weighted bottom bar
+  const screenMat = mat('#ffffff', { map: tex, emissive: '#ffffff', emissiveMap: tex, emissiveIntensity: 0, roughness: 0.9 });
+  plane(1.2, 0.72, screenMat, SX, SY, SZ + 0.02, 0, 0, g);
+  // the beam: a faint cone of light from the lens to the screen, only while something plays
+  const from = new THREE.Vector3(0.85, 0.875, -0.165), to = new THREE.Vector3(SX, SY, SZ + 0.03);
+  const len = from.distanceTo(to);
+  const beamGeo = new THREE.ConeGeometry(0.36, len, 32, 1, true);
+  beamGeo.translate(0, -len / 2, 0);  // the tip at the lens, the wide end at the screen
+  const beam = new THREE.Mesh(beamGeo, new THREE.MeshBasicMaterial({ color: '#fff0c0', transparent: true, opacity: 0.13, depthWrite: false, side: THREE.DoubleSide, blending: THREE.AdditiveBlending }));
+  beam.position.copy(from);
+  beam.quaternion.setFromUnitVectors(new THREE.Vector3(0, -1, 0), to.clone().sub(from).normalize());
+  beam.raycast = () => {};
+  beam.visible = false;
+  g.add(beam);
+  let shown = null;
+  return {
+    set(title) {
+      if (title === shown) return;
+      shown = title;
+      tex.redraw(title);
+      screenMat.emissiveIntensity = title ? 0.85 : 0;
+      glassMat.emissiveIntensity = title ? 1.6 : 0;
+      beam.visible = !!title;
+    },
+  };
+}
 // parcels waiting beside the download client's desk
 const parcels = [];
 for (let i = 0; i < 12; i++) {
@@ -1677,6 +1749,7 @@ function render(d) {
     const on = svc.up && !!svc.task;
     desk.screenMat.emissive.set(on ? p.s.color : '#000000');
     desk.screenMat.emissiveIntensity = on ? 1.1 : 0;
+    if (PROJECTOR_KINDS.includes(svc.kind) && desk.group) (desk.projector ||= makeProjector(desk.group)).set(on ? svc.showing || '' : '');
     p.root.visible = svc.up;
     p.label.querySelector('.dot').className = 'dot ' + (!svc.up || bad ? 'error' : svc.issues.length ? 'warning' : '');
     const status = p.label.querySelector('span');

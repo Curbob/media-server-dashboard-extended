@@ -731,6 +731,10 @@ class Plex(unittest.TestCase):
         self.sessions[0]["Player"]["state"] = "paused"
         server.read_plex()
         self.assertTrue(server.activity("Plex").startswith("Transcoding Arrival (2016) for Sam"))  # the paused one doesn't count
+        self.assertEqual(server.showing("Plex"), "Arrival (2016)")  # the projector shows the title alone
+        self.sessions[1]["Player"]["state"] = "paused"
+        server.read_plex()
+        self.assertIsNone(server.showing("Plex"))  # all paused: the projector goes dark
 
     def test_direct_stream_is_not_transcoding(self):
         self.assertFalse(server.px_transcoding({"TranscodeSession": {"videoDecision": "copy", "audioDecision": "copy"}}))
