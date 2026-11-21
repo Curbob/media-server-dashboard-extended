@@ -1111,7 +1111,7 @@ dcTag.className = 'label';
 dcTag.innerHTML = '<div class="tag"><i class="dot"></i><b>Proxmox host</b><span></span><i class="badge" tabindex="0">!</i></div>';
 $('labels').append(dcTag);
 
-// ---------- VPN check: a security guard at the data center door while the traffic goes out through the VPN ----------
+// ---------- VPN check: a security guard in the data center while the traffic goes out through the VPN ----------
 // When it is down the guard is gone and a red light spins on the corner of the glass wall. Off in the settings: neither.
 const beacon = group(DC.x1, 1.64, DC.z0);
 cyl(0.15, 0.17, 0.09, '#3a3f52', 0, 0.045, 0, beacon);
@@ -1123,7 +1123,8 @@ const beaconLight = new THREE.PointLight('#ff3020', 0, 8);
 beaconLight.position.set(0.3, 0.3, 0.3);
 beacon.add(beaconLight);
 beacon.visible = false;
-const GUARD_SPOT = { at: [DC.x1 + 0.55, DC.z0 + 0.6], face: 0.45, pose: 'guard' };
+// inside the data center's front corner by the glass: in view, and the glass keeps the foosball players apart
+const GUARD_SPOT = { at: [DC.x1 - 0.85, DC.z1 - 0.95], face: 0.5, pose: 'guard' };
 const vpnState = { status: 'off' };
 let guard = null;
 function setVpn(v) {

@@ -222,7 +222,7 @@ nav button.dirty::after { content: ' •'; color: #9cc4ff; }
     <div class="row"><button class="ghost" id="hookTest">Send a test message</button><button class="ghost" id="gameReset" hidden>Reset points</button><span class="status" id="hookStatus"></span></div>
 
     <h3 style="margin-top:14px">VPN check</h3>
-    <p class="hint">A security guard stands at the office's data center door while your traffic goes out through a VPN, and a red light spins when it doesn't. Every two minutes the dashboard asks <b>ipinfo.io</b> which internet provider its traffic leaves through; if that is your home provider, the VPN is down. It works with any VPN app on the dashboard's machine or your router (your Docker containers go out the same way). Only the provider and country are shown, never your address.</p>
+    <p class="hint">A security guard stands in the office's data center while your traffic goes out through a VPN, and a red light spins when it doesn't. Every two minutes the dashboard asks <b>ipinfo.io</b> which internet provider its traffic leaves through; if that is your home provider, the VPN is down. It works with any VPN app on the dashboard's machine or your router (your Docker containers go out the same way). Only the provider and country are shown, never your address.</p>
     <label class="check"><input id="vpnOn" type="checkbox"> Check that the VPN is on</label>
     <div id="vpnBox" class="body" hidden>
       <div class="row"><button class="ghost" id="vpnCheck">Check now</button><span class="status" id="vpnNow"></span></div>
