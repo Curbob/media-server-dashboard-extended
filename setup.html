@@ -240,7 +240,7 @@ routes = ["GET /v1/vpn/status", "GET /v1/publicip/ip"]
 auth = "apikey"
 apikey = "a key from: docker run --rm qmcgaw/gluetun genkey"</pre>
         <div class="grid2">
-          <label>gluetun's address<input type="url" id="vpnGluetunUrl" placeholder="http://gluetun:8000" spellcheck="false"></label>
+          <label>gluetun's address<input type="text" id="vpnGluetunUrl" placeholder="http://172.19.0.1:8001" spellcheck="false"></label>
           <label>API key <span class="hint" id="vpnKeySaved" hidden>(saved – leave empty to keep it for this address)</span><input type="password" id="vpnGluetunKey" autocomplete="off"></label>
         </div>
       </div>

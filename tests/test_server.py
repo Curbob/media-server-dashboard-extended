@@ -929,6 +929,8 @@ class Gluetun(VPNCheck):
         r = server.wizard_test({"what": "vpn", "vpn": form})
         self.assertEqual((r["ok"], r["status"], r["provider"]), (True, "on", "Proton AG"))
         self.assertFalse(server.wizard_test({"what": "vpn", "vpn": {**form, "gluetun_key": "nope"}})["ok"])
+        bare = {**form, "gluetun_url": self.gurl.removeprefix("http://")}  # typed without http://
+        self.assertTrue(server.wizard_test({"what": "vpn", "vpn": bare})["ok"])
         base = {"user": "admin", "password": "long-enough-pw"}
         saved = {"vpn": {**form, "home_asn": "", "home_provider": ""}}
         with unittest.mock.patch.dict(server.CONFIG, saved, clear=True):

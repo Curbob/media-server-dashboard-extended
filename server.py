@@ -2098,7 +2098,10 @@ def vpn_settings(v, old):
     """The VPN check's settings from the wizard; gluetun's API key is kept when not re-entered, for the same address."""
     asn = (v.get("home_asn") or "").strip().upper()
     mode = "gluetun" if v.get("mode") == "gluetun" else "self"
-    url = clean_url(v["gluetun_url"]) if mode == "gluetun" and (v.get("gluetun_url") or "").strip() else ""
+    raw = (v.get("gluetun_url") or "").strip()
+    if raw and "://" not in raw:
+        raw = "http://" + raw  # "172.19.0.1:8001" or "gluetun:8000": gluetun's control server speaks plain HTTP
+    url = clean_url(raw) if mode == "gluetun" and raw else ""
     return {"enabled": bool(v.get("enabled")), "mode": mode, "home_asn": asn if re.fullmatch(r"AS\d{1,10}", asn) else "",
             "home_provider": re.sub(r"\s+", " ", v.get("home_provider") or "").strip()[:80], "gluetun_url": url,
             "gluetun_key": (v.get("gluetun_key") or "").strip()[:200] or keep_secret(old.get("gluetun_url"), url, old.get("gluetun_key", "")) if url else ""}
