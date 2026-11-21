@@ -225,10 +225,26 @@ nav button.dirty::after { content: ' •'; color: #9cc4ff; }
     <p class="hint">A security guard stands in the office's data center while your traffic goes out through a VPN, and a red light spins when it doesn't. Every two minutes the dashboard asks <b>ipinfo.io</b> which internet provider its traffic leaves through; if that is your home provider, the VPN is down. It works with any VPN app on the dashboard's machine or your router (your Docker containers go out the same way). Only the provider and country are shown, never your address.</p>
     <label class="check"><input id="vpnOn" type="checkbox"> Check that the VPN is on</label>
     <div id="vpnBox" class="body" hidden>
+      <label class="check"><input type="radio" name="vpnMode" value="self" checked> The VPN runs on this machine or the router <span class="hint">(VPN app, router VPN)</span></label>
+      <label class="check"><input type="radio" name="vpnMode" value="gluetun"> The VPN runs in a <b>gluetun</b> container <span class="hint">(only the download client behind it)</span></label>
+      <div id="vpnSelf" class="body">
+        <div class="row"><button class="ghost" id="vpnHomeBtn">This is my home connection</button><span class="hint">Turn the VPN off for a moment first, then click.</span></div>
+        <label>Home internet provider <span class="hint">(set by the button, or type its name, e.g. Spectrum)</span><input id="vpnHome" type="text" autocomplete="off" spellcheck="false" maxlength="80"></label>
+        <input type="hidden" id="vpnHomeAsn">
+      </div>
+      <div id="vpnGluetun" class="body" hidden>
+        <p class="hint">The dashboard asks gluetun's control server (port 8000) whether the VPN runs and which address it has, and compares that with its own: the same address means gluetun's traffic leaks out through your home connection. Give it an API key that may only read, in gluetun's <code>/gluetun/auth/config.toml</code>:</p>
+        <pre class="tpl">[[roles]]
+name = "dashboard"
+routes = ["GET /v1/vpn/status", "GET /v1/publicip/ip"]
+auth = "apikey"
+apikey = "a key from: docker run --rm qmcgaw/gluetun genkey"</pre>
+        <div class="grid2">
+          <label>gluetun's address<input type="url" id="vpnGluetunUrl" placeholder="http://gluetun:8000" spellcheck="false"></label>
+          <label>API key <span class="hint" id="vpnKeySaved" hidden>(saved – leave empty to keep it for this address)</span><input type="password" id="vpnGluetunKey" autocomplete="off"></label>
+        </div>
+      </div>
       <div class="row"><button class="ghost" id="vpnCheck">Check now</button><span class="status" id="vpnNow"></span></div>
-      <div class="row"><button class="ghost" id="vpnHomeBtn">This is my home connection</button><span class="hint">Turn the VPN off for a moment first, then click.</span></div>
-      <label>Home internet provider <span class="hint">(set by the button, or type its name, e.g. Spectrum)</span><input id="vpnHome" type="text" autocomplete="off" spellcheck="false" maxlength="80"></label>
-      <input type="hidden" id="vpnHomeAsn">
     </div>
   </section>
 
@@ -580,18 +596,28 @@ $('hookTest').onclick = async () => {
 // The VPN check: what the dashboard sees right now, and learning the home connection from it.
 let vpnSeen = null;
 const vpnText = (v) => `${v.provider || 'unknown provider'}${v.country ? ' (' + v.country + ')' : ''}`;
-async function vpnLook() {
-  setStatus($('vpnNow'), 'busy', 'Asking ipinfo.io …');
-  const r = await api('/setup/test', { what: 'vpn' });
+const vpnMode = () => document.querySelector('input[name=vpnMode]:checked').value;
+const vpnInput = () => ({ enabled: $('vpnOn').checked, mode: vpnMode(), home_provider: $('vpnHome').value.trim(), home_asn: $('vpnHomeAsn').value,
+  gluetun_url: $('vpnGluetunUrl').value.trim(), gluetun_key: $('vpnGluetunKey').value });
+async function vpnLook(self) {
+  const v = self ? { ...vpnInput(), mode: 'self' } : vpnInput();
+  setStatus($('vpnNow'), 'busy', v.mode === 'gluetun' ? 'Asking gluetun …' : 'Asking ipinfo.io …');
+  const r = await api('/setup/test', { what: 'vpn', vpn: v });
   vpnSeen = r.ok ? r : null;
-  setStatus($('vpnNow'), r.ok ? 'ok' : 'err', r.ok ? `Your traffic goes out through ${vpnText(r)}` : '✕ ' + r.error);
+  const text = !r.ok ? '✕ ' + r.error : v.mode !== 'gluetun' ? `Your traffic goes out through ${vpnText(r)}`
+    : r.status === 'on' ? `✓ gluetun's VPN runs${r.provider ? ': its traffic goes out through ' + vpnText(r) : ''}` : `✕ VPN down: ${r.why}`;
+  setStatus($('vpnNow'), r.ok && (v.mode !== 'gluetun' || r.status === 'on') ? 'ok' : 'err', text);
   return vpnSeen;
 }
-function syncVpn() { $('vpnBox').hidden = !$('vpnOn').checked; }
+function syncVpn() {
+  $('vpnBox').hidden = !$('vpnOn').checked;
+  $('vpnSelf').hidden = vpnMode() !== 'self'; $('vpnGluetun').hidden = vpnMode() !== 'gluetun';
+}
 $('vpnOn').addEventListener('change', syncVpn);
-$('vpnCheck').onclick = vpnLook;
+document.querySelectorAll('input[name=vpnMode]').forEach((r) => r.addEventListener('change', syncVpn));
+$('vpnCheck').onclick = () => vpnLook();
 $('vpnHomeBtn').onclick = async () => {
-  const v = await vpnLook();
+  const v = await vpnLook(true);
   if (!v) return;
   $('vpnHome').value = v.provider; $('vpnHomeAsn').value = v.asn || '';
   setStatus($('vpnNow'), 'ok', `✓ Home connection: ${vpnText(v)}. Turn the VPN back on; the guard shows up within two minutes after saving.`);
@@ -723,6 +749,8 @@ function load(c) {
   $('gameOn').checked = c.game.enabled !== false;
   const vpn = c.vpn || {};
   $('vpnOn').checked = !!vpn.enabled; $('vpnHome').value = vpn.home_provider || ''; $('vpnHomeAsn').value = vpn.home_asn || '';
+  document.querySelector(`input[name=vpnMode][value=${vpn.mode === 'gluetun' ? 'gluetun' : 'self'}]`).checked = true;
+  $('vpnGluetunUrl').value = vpn.gluetun_url || ''; $('vpnKeySaved').hidden = !vpn.has_key;
   syncVpn();
   $('gameReset').hidden = !c.setup_done;
   const bases = [location.origin];
@@ -759,7 +787,7 @@ function collect() {
     watch_guests: !pveOn ? [] : $('pveFound').hidden ? cfg.watch_guests : checked('pveGuests'),
     apps, custom_apps: [...document.querySelectorAll('#customApps .app')].map((el) => el.read()),
     game: { enabled: $('gameOn').checked }, new_webhook_token: $('newHook').checked,
-    vpn: { enabled: $('vpnOn').checked, home_provider: $('vpnHome').value.trim(), home_asn: $('vpnHomeAsn').value },
+    vpn: vpnInput(),
     home: { enabled: $('homeOn').checked, side: document.querySelector('input[name=side]:checked').value, layout: document.querySelector('input[name=layout]:checked').value,
       tiles: [...document.querySelectorAll('#tiles .tile')].map((el) => el.read()) },
   };
@@ -775,7 +803,7 @@ function renderSummary() {
     ['Storages', d.proxmox.url ? (d.storages.join(', ') || 'all') : '–'], ['Watched guests', d.watch_guests.join(', ') || '–'],
     ['Apps', on.join(', ') || 'none'],
     ['Live feed', `gamification ${d.game.enabled ? 'on' : 'off'}${d.new_webhook_token ? ' · new webhook address' : ''}`],
-    ['VPN check', d.vpn.enabled ? `on · home connection: ${d.vpn.home_provider || 'not set'}` : 'off'],
+    ['VPN check', !d.vpn.enabled ? 'off' : d.vpn.mode === 'gluetun' ? `on · gluetun at ${d.vpn.gluetun_url || '(no address)'}` : `on · home connection: ${d.vpn.home_provider || 'not set'}`],
     ['After signing in', d.landing === 'dashboard' ? 'the dashboard' : 'the office'],
     ['Start page', d.home.enabled ? `${d.home.side === 'left' ? 'left' : 'right'} of the office · ${d.home.layout === 'table' ? 'table' : 'tiles'} · ${d.home.tiles.length} tile(s)` : 'off'],
   ];

@@ -1,0 +1,15 @@
+# Who may use gluetun's control server. The dashboard only needs to read whether the VPN runs and its address;
+# it can't stop the VPN or change anything. Replace the key with your own: docker run --rm qmcgaw/gluetun genkey
+[[roles]]
+name = "dashboard"
+routes = ["GET /v1/vpn/status", "GET /v1/publicip/ip"]
+auth = "apikey"
+apikey = "REPLACE-WITH-YOUR-KEY"
+
+# Only for trying the alarm: a second key that may also stop and start the VPN (see README.md).
+# Leave it commented out for everyday use.
+# [[roles]]
+# name = "test-switch"
+# routes = ["PUT /v1/vpn/status"]
+# auth = "apikey"
+# apikey = "REPLACE-WITH-A-SECOND-KEY"

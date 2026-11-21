@@ -768,6 +768,8 @@ class VPNCheck(unittest.TestCase):
         import threading
         from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
         self.answer = {"ip": "203.0.113.7", "org": "AS209103 Proton AG", "country": "CH"}
+        self.by_ip = {"185.159.157.9": {"ip": "185.159.157.9", "org": "AS209103 Proton AG", "country": "NL"}}
+        self.asked = []
         outer = self
 
         class H(BaseHTTPRequestHandler):
@@ -775,9 +777,12 @@ class VPNCheck(unittest.TestCase):
                 pass
 
             def do_GET(self):
-                if outer.answer is None:
+                outer.asked.append(self.path)
+                ip = self.path.strip("/").split("/")[0] if self.path.count("/") == 2 else None
+                body = outer.by_ip.get(ip) if ip else outer.answer
+                if body is None:
                     self.send_response(503); self.end_headers(); return
-                data = json.dumps(outer.answer).encode()
+                data = json.dumps(body).encode()
                 self.send_response(200)
                 self.send_header("Content-Length", str(len(data)))
                 self.end_headers()
@@ -799,7 +804,7 @@ class VPNCheck(unittest.TestCase):
     def test_lookup_keeps_provider_and_country_but_not_the_address(self):
         self.assertEqual(server.vpn_lookup(), {"asn": "AS209103", "provider": "Proton AG", "country": "CH"})
         server.read_vpn()
-        self.assertEqual(server.state["vpn"], {"status": "on", "provider": "Proton AG", "country": "CH"})
+        self.assertEqual(server.state["vpn"], {"status": "on", "provider": "Proton AG", "country": "CH", "why": "", "via": ""})
         self.assertNotIn("203.0.113.7", json.dumps(server.state["vpn"]))
 
     def test_home_provider_means_down_then_back(self):
@@ -839,7 +844,97 @@ class VPNCheck(unittest.TestCase):
         base = {"user": "admin", "password": "long-enough-pw"}
         with unittest.mock.patch.dict(server.CONFIG, {}, clear=True):
             c = server.build_config({**base, "vpn": {"enabled": True, "home_asn": "as7922", "home_provider": " Comcast  Cable "}})
-            self.assertEqual(c["vpn"], {"enabled": True, "home_asn": "AS7922", "home_provider": "Comcast Cable"})
+            self.assertEqual(c["vpn"], {"enabled": True, "mode": "self", "home_asn": "AS7922", "home_provider": "Comcast Cable", "gluetun_url": "", "gluetun_key": ""})
             self.assertEqual(server.build_config({**base, "vpn": {"enabled": True, "home_asn": "x; rm", "home_provider": "Spectrum"}})["vpn"]["home_asn"], "")
             with self.assertRaises(ValueError):
                 server.build_config({**base, "vpn": {"enabled": True}})  # on, but no home connection
+
+
+class Gluetun(VPNCheck):
+    """The VPN check asking a fake gluetun control server (API key in X-API-Key), plus the fake ipinfo.io."""
+
+    def setUp(self):
+        super().setUp()
+        import threading
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        self.glu = {"status": "running", "public_ip": "185.159.157.9"}
+        self.keys = []
+        outer = self
+
+        class G(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                outer.keys.append(self.headers.get("X-API-Key"))
+                if self.headers.get("X-API-Key") != "readonly-key":
+                    self.send_response(401); self.end_headers(); return
+                body = {"/v1/vpn/status": {"status": outer.glu["status"]}, "/v1/publicip/ip": {"public_ip": outer.glu["public_ip"]}}.get(self.path)
+                data = json.dumps(body).encode()
+                self.send_response(200 if body else 404)
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+        self.gsrv = ThreadingHTTPServer(("127.0.0.1", 0), G)
+        threading.Thread(target=self.gsrv.serve_forever, daemon=True).start()
+        self.gurl = f"http://127.0.0.1:{self.gsrv.server_port}"
+        server.vpn_cache.clear()
+        server.VPN.clear(); server.VPN.update(enabled=True, mode="gluetun", gluetun_url=self.gurl, gluetun_key="readonly-key")
+
+    def tearDown(self):
+        self.gsrv.shutdown()
+        super().tearDown()
+
+    # The self-check tests of the parent class switch to mode "self" themselves where they need it.
+    def test_lookup_keeps_provider_and_country_but_not_the_address(self):
+        server.read_vpn()
+        self.assertEqual(server.state["vpn"], {"status": "on", "provider": "Proton AG", "country": "NL", "why": "", "via": "gluetun"})
+        self.assertNotIn("185.159.157.9", json.dumps(server.state["vpn"]))
+        self.assertEqual(set(self.keys), {"readonly-key"})
+
+    def test_home_provider_means_down_then_back(self):
+        server.read_vpn()
+        self.glu["status"] = "stopped"
+        server.read_vpn()
+        self.assertEqual((server.state["vpn"]["status"], server.state["vpn"]["why"]), ("down", "gluetun says the VPN is stopped"))
+        self.assertTrue(any(a["source"] == "VPN" and "stopped" in a["message"] for a in server.alerts()))
+        self.glu["status"] = "running"
+        server.read_vpn()
+        self.assertEqual(server.state["vpn"]["status"], "on")
+        self.assertTrue(any(e["source"] == "VPN" and e["kind"] == "recover" for e in server.LIVE.recent(2)))
+
+    def test_leak_same_address_as_the_dashboard(self):
+        self.answer = {"ip": "185.159.157.9", "org": "AS7922 Comcast", "country": "US"}  # the dashboard goes out the same way
+        server.read_vpn()
+        self.assertEqual(server.state["vpn"]["status"], "down")
+        self.assertIn("leaving through your home connection", server.state["vpn"]["why"])
+
+    def test_provider_of_a_steady_address_is_looked_up_once(self):
+        server.read_vpn(); server.read_vpn()
+        self.assertEqual(sum(1 for p in self.asked if "185.159.157.9" in p), 1)
+
+    def test_typed_provider_matches_part_of_the_name(self):
+        self.skipTest("only for the self check")
+
+    def test_no_answer_is_unknown_and_switched_off_is_off(self):
+        server.VPN["gluetun_key"] = "wrong"
+        server.read_vpn()
+        self.assertEqual((server.state["vpn"]["status"], server.state["vpn"]["why"]), ("unknown", "no answer from gluetun"))
+        self.assertFalse(any(a["source"] == "VPN" for a in server.alerts()))
+
+    def test_settings_check_now_and_saving(self):
+        import unittest.mock
+        form = {"enabled": True, "mode": "gluetun", "gluetun_url": self.gurl, "gluetun_key": "readonly-key"}
+        r = server.wizard_test({"what": "vpn", "vpn": form})
+        self.assertEqual((r["ok"], r["status"], r["provider"]), (True, "on", "Proton AG"))
+        self.assertFalse(server.wizard_test({"what": "vpn", "vpn": {**form, "gluetun_key": "nope"}})["ok"])
+        base = {"user": "admin", "password": "long-enough-pw"}
+        saved = {"vpn": {**form, "home_asn": "", "home_provider": ""}}
+        with unittest.mock.patch.dict(server.CONFIG, saved, clear=True):
+            # an empty key field keeps the saved key for the same address, never for another one
+            self.assertEqual(server.build_config({**base, "vpn": {**form, "gluetun_key": ""}})["vpn"]["gluetun_key"], "readonly-key")
+            with self.assertRaises(ValueError):
+                server.build_config({**base, "vpn": {**form, "gluetun_url": "http://elsewhere:8000", "gluetun_key": ""}})
+            self.assertTrue(server.wizard_test({"what": "vpn", "vpn": {**form, "gluetun_key": ""}})["ok"])  # Check now with the saved key
+            self.assertNotIn("readonly-key", json.dumps(server.public_config()))  # the browser never sees it

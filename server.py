@@ -110,7 +110,7 @@ STORAGES = CONFIG.get("storages") or []  # empty: every active storage on the no
 PVE = CONFIG.get("proxmox") or {}
 HOME = CONFIG.get("home") or {}
 GAME = CONFIG.get("game") or {}
-VPN = CONFIG.get("vpn") or {}  # {"enabled", "home_asn", "home_provider"}: see the VPN check
+VPN = CONFIG.get("vpn") or {}  # {"enabled", "mode", "home_asn", "home_provider", "gluetun_url", "gluetun_key"}: see the VPN check
 WEBHOOK_TOKEN = CONFIG.get("webhook_token") or ""
 settings_updates = lambda: CONFIG.get("updates") or {}
 LIVE = livemod.Live(DATA, enabled=GAME.get("enabled", True))
@@ -1006,19 +1006,48 @@ def read_plex():
 
 
 # ---------- VPN check: does the traffic go out through the home connection? ----------
-# Works for any VPN on the dashboard's machine or the router (Docker containers go out the same way): an IP
-# lookup says which provider the traffic leaves through. The home provider, learned once in the settings,
-# means the VPN is down; any other means it is on. Only the provider and country are kept, never the address.
+# Two ways, chosen in the settings:
+# - "self" (any VPN on the dashboard's machine or the router; Docker containers go out the same way): an IP
+#   lookup says which provider the traffic leaves through. The home provider, learned once in the settings,
+#   means the VPN is down; any other means it is on.
+# - "gluetun" (the VPN in a gluetun container, only the download client behind it): gluetun's control server
+#   says whether the VPN runs and which public address it has. The same address as the dashboard's own means
+#   gluetun's traffic leaks out through the home connection, which counts as down.
+# Only the provider and country are kept, never an address.
 VPN_LOOKUP = os.environ.get("MSD_VPN_LOOKUP") or "https://ipinfo.io/json"
+vpn_cache = {}  # gluetun's public address -> its provider, so a steady VPN costs one lookup
 
 
-def vpn_lookup():
-    """Which provider the traffic leaves through: {"asn": "AS209103", "provider": "Proton AG", "country": "CH"}."""
-    info = http_get(VPN_LOOKUP, {"User-Agent": "media-server-dashboard"}, timeout=8)
+def vpn_lookup(ip=None, keep_ip=False):
+    """Which provider the traffic (or an address) leaves through: {"asn": "AS209103", "provider": "Proton AG", "country": "CH"}."""
+    url = VPN_LOOKUP.replace("/json", f"/{urllib.parse.quote(ip)}/json") if ip else VPN_LOOKUP
+    info = http_get(url, {"User-Agent": "media-server-dashboard"}, timeout=8)
     asn, _, provider = str(info.get("org") or "").partition(" ")
     if not re.fullmatch(r"AS\d+", asn):  # no ASN in front: the whole thing is the name
         asn, provider = "", str(info.get("org") or "")
-    return {"asn": asn, "provider": provider.strip()[:80], "country": str(info.get("country") or "")[:2]}
+    out = {"asn": asn, "provider": provider.strip()[:80], "country": str(info.get("country") or "")[:2]}
+    return {**out, "ip": str(info.get("ip") or "")} if keep_ip else out
+
+
+def gluetun_get(url, key, path):
+    return http_get(url.rstrip("/") + path, {"X-API-Key": key}, timeout=6)
+
+
+def gluetun_check(url, key):
+    """("on" | "down", provider info, why) from gluetun's control server. Raises when it can't be asked."""
+    running = gluetun_get(url, key, "/v1/vpn/status").get("status")
+    if running != "running":
+        return "down", {}, f"gluetun says the VPN is {running or 'not running'}"
+    ip = str(gluetun_get(url, key, "/v1/publicip/ip").get("public_ip") or "")
+    if not ip:
+        return "on", {}, ""  # running, but gluetun hasn't looked up its address yet
+    if ip not in vpn_cache:
+        vpn_cache.clear()
+        vpn_cache[ip] = vpn_lookup(ip)
+    own = vpn_lookup(keep_ip=True)
+    if own["ip"] and own["ip"] == ip:
+        return "down", vpn_cache[ip], "gluetun's traffic is leaving through your home connection"
+    return "on", vpn_cache[ip], ""
 
 
 def vpn_verdict(look, home_asn, home_provider):
@@ -1035,17 +1064,22 @@ def read_vpn():
         state["vpn"] = {"status": "off"}  # the check is switched off
         return
     before = state["vpn"].get("status")
+    gluetun = VPN.get("mode") == "gluetun"
     try:
-        look = vpn_lookup()
+        if gluetun:
+            status, look, why = gluetun_check(VPN.get("gluetun_url") or "", VPN.get("gluetun_key") or "")
+        else:
+            look = vpn_lookup()
+            status = vpn_verdict(look, VPN.get("home_asn") or "", VPN.get("home_provider") or "")
+            why = f"traffic is leaving through your home connection ({look['provider']})" if status == "down" else ""
     except FAIL:
-        state["vpn"] = {**state["vpn"], "status": "unknown"}
+        state["vpn"] = {**state["vpn"], "status": "unknown", "why": "no answer from gluetun" if gluetun else "no answer from the check"}
         return
-    status = vpn_verdict(look, VPN.get("home_asn") or "", VPN.get("home_provider") or "")
-    state["vpn"] = {"status": status, "provider": look["provider"], "country": look["country"]}
+    state["vpn"] = {"status": status, "provider": look.get("provider", ""), "country": look.get("country", ""), "why": why, "via": "gluetun" if gluetun else ""}
     if status == "down" and before != "down":
-        LIVE.emit("VPN", "health", f"is down: traffic is leaving through your home connection ({look['provider']})", "error")
+        LIVE.emit("VPN", "health", f"is down: {why}", "error")
     elif status == "on" and before == "down":
-        LIVE.emit("VPN", "recover", f"is back on: traffic goes out through {look['provider']}", "success")
+        LIVE.emit("VPN", "recover", "is back on" + (f": traffic goes out through {look['provider']}" if look.get("provider") else ""), "success")
 
 
 def read_bazarr():
@@ -1510,7 +1544,7 @@ def alerts():
     out = []
     add = lambda level, source, msg: out.append({"level": level, "source": source, "message": msg})
     if state["vpn"].get("status") == "down":
-        add("error", "VPN", f"VPN is down: traffic is leaving through your home connection ({state['vpn'].get('provider') or 'home'})")
+        add("error", "VPN", f"VPN is down: {state['vpn'].get('why') or 'traffic is leaving through your home connection'}")
     if not PVE:
         if state["system"].get("source") != "local":  # in Docker the machine's own numbers stand in
             add("warning", "Proxmox", "Not set up yet, so there are no host stats. Open the settings to add it.")
@@ -2045,7 +2079,8 @@ def public_config():
         # The webhook address is a secret too, but whoever may open the settings needs it to set up the apps.
         "webhook": {"token": WEBHOOK_TOKEN if SETUP_DONE else "", "set": bool(WEBHOOK_TOKEN)},
         "game": {"enabled": GAME.get("enabled", True)},
-        "vpn": {"enabled": bool(VPN.get("enabled")), "home_asn": VPN.get("home_asn", ""), "home_provider": VPN.get("home_provider", "")},
+        "vpn": {"enabled": bool(VPN.get("enabled")), "mode": "gluetun" if VPN.get("mode") == "gluetun" else "self", "home_asn": VPN.get("home_asn", ""),
+                "home_provider": VPN.get("home_provider", ""), "gluetun_url": VPN.get("gluetun_url", ""), "has_key": bool(VPN.get("gluetun_key"))},
         "landing": "dashboard" if c.get("landing") == "dashboard" else "office",
         "updates": update_info() if SETUP_DONE else {"managed": bool(updater_conf()), "version": VERSION},
     }
@@ -2057,6 +2092,16 @@ def origin_of(url):
         return (u.scheme.lower(), (u.hostname or "").lower(), u.port or (443 if u.scheme == "https" else 80))
     except ValueError:
         return None
+
+
+def vpn_settings(v, old):
+    """The VPN check's settings from the wizard; gluetun's API key is kept when not re-entered, for the same address."""
+    asn = (v.get("home_asn") or "").strip().upper()
+    mode = "gluetun" if v.get("mode") == "gluetun" else "self"
+    url = clean_url(v["gluetun_url"]) if mode == "gluetun" and (v.get("gluetun_url") or "").strip() else ""
+    return {"enabled": bool(v.get("enabled")), "mode": mode, "home_asn": asn if re.fullmatch(r"AS\d{1,10}", asn) else "",
+            "home_provider": re.sub(r"\s+", " ", v.get("home_provider") or "").strip()[:80], "gluetun_url": url,
+            "gluetun_key": (v.get("gluetun_key") or "").strip()[:200] or keep_secret(old.get("gluetun_url"), url, old.get("gluetun_key", "")) if url else ""}
 
 
 def keep_secret(saved_url, new_url, secret):
@@ -2124,7 +2169,13 @@ def wizard_test(req):
             app_get(app, app["health_path"], raw=True)
             return {"ok": True}
         if what == "vpn":
-            return {"ok": True, **vpn_lookup()}
+            v = vpn_settings(req.get("vpn") or {}, CONFIG.get("vpn") or {})
+            if v["mode"] != "gluetun":
+                return {"ok": True, **vpn_lookup()}
+            if not (v["gluetun_url"] and v["gluetun_key"]):
+                return {"ok": False, "error": "gluetun's address and API key are missing"}
+            status, look, why = gluetun_check(v["gluetun_url"], v["gluetun_key"])
+            return {"ok": True, "status": status, "why": why, **look}
         if what == "hook":
             LIVE.emit(req.get("source") or "Dashboard", "test", "Test from the settings: the live feed works 👋", "info")
             return {"ok": True}
@@ -2155,12 +2206,11 @@ def build_config(req):
     c = {k: v for k, v in old.items() if k in ("port", "bind", "trusted_proxies", "caddy_site_file", "caddy_managed", "internet_check", "updates")}
     c["webhook_token"] = secrets.token_urlsafe(24) if req.get("new_webhook_token") or not old.get("webhook_token") else old["webhook_token"]
     c["game"] = {"enabled": bool((req.get("game") or {}).get("enabled", True))}
-    v = req.get("vpn") or {}
-    asn = (v.get("home_asn") or "").strip().upper()
-    c["vpn"] = {"enabled": bool(v.get("enabled")), "home_asn": asn if re.fullmatch(r"AS\d{1,10}", asn) else "",
-                "home_provider": re.sub(r"\s+", " ", v.get("home_provider") or "").strip()[:80]}
-    if c["vpn"]["enabled"] and not (c["vpn"]["home_asn"] or c["vpn"]["home_provider"]):
+    c["vpn"] = vpn_settings(req.get("vpn") or {}, old.get("vpn") or {})
+    if c["vpn"]["enabled"] and c["vpn"]["mode"] == "self" and not (c["vpn"]["home_asn"] or c["vpn"]["home_provider"]):
         raise ValueError("VPN check: set your home connection (button) or type your home internet provider")
+    if c["vpn"]["enabled"] and c["vpn"]["mode"] == "gluetun" and not (c["vpn"]["gluetun_url"] and c["vpn"]["gluetun_key"]):
+        raise ValueError("VPN check: gluetun needs its address and an API key (a new address needs the key again)")
     c["title"] = (req.get("title") or "").strip()[:80] or "Media Server Dashboard"
     c["landing"] = "dashboard" if req.get("landing") == "dashboard" else "office"  # what opens after signing in
 

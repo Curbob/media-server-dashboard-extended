@@ -1,0 +1,30 @@
+# A small setup to try the dashboard's VPN check with gluetun (ProtonVPN over WireGuard): gluetun itself, and a
+# tiny container behind it that prints the address it goes out with, like a download client would. Your real
+# containers stay as they are. Steps: README.md in this folder.
+services:
+  gluetun:
+    image: qmcgaw/gluetun
+    container_name: gluetun-test
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    environment:
+      - VPN_SERVICE_PROVIDER=protonvpn
+      - VPN_TYPE=wireguard
+      - WIREGUARD_PRIVATE_KEY=${WIREGUARD_PRIVATE_KEY}
+      - SERVER_COUNTRIES=${SERVER_COUNTRIES:-Netherlands}
+    volumes:
+      - ./auth/config.toml:/gluetun/auth/config.toml:ro   # who may use the control server: the dashboard, read only
+    ports:
+      - "8001:8000/tcp"   # the control server; 8001 on the machine, as 8000 is often taken (Portainer)
+    restart: unless-stopped
+
+  behind-vpn:
+    image: curlimages/curl
+    container_name: behind-vpn-test
+    network_mode: "service:gluetun"   # all its traffic goes through gluetun, as a download client's would
+    depends_on:
+      - gluetun
+    entrypoint: ["sh", "-c", "while true; do curl -s https://ipinfo.io/json; echo; sleep 60; done"]
+    restart: unless-stopped
