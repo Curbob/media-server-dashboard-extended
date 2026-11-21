@@ -7,7 +7,7 @@ becomes its GitHub release text, so write it for the people who run the dashboar
 
 Added:
 - Plex as a built-in app (Settings → Apps, with its token: open any item → ⋯ → Get Info → View XML, the `X-Plex-Token` at the end of the address). It does what Jellyfin does: who is watching what, with progress, device and transcoding; the latest watched; the library's numbers; "is watching" lines in the live feed. It fills the dashboard's Home Cinema card and the TV above the office couch, the office has a Plex worker who sits at a desk while something streams, posters open in it, and the statistics show streams and transcodes. With Jellyfin and Plex both set up, Jellyfin fills the Home Cinema card and each worker still shows what it is streaming. A Plex added as a custom app before keeps working; switch on the built-in one and remove the custom entry to get all of this.
-- Office: the Plex worker's desk has a projector. While something streams, it throws a beam onto a roll-up screen behind the desk that shows the title; with nothing playing it is dark.
+- Office: the media server's desk has a projector. While something streams, it throws a beam onto a roll-up screen behind the desk that shows the title; with nothing playing it is dark. With Jellyfin and Plex both set up, it goes to the one that fills the Home Cinema card (Jellyfin).
 
 Fixed:
 - With a built-in Jellyfin, the first look for problems after a start failed (`watch_alerts: KeyError`) because Jellyfin hadn't been asked yet.

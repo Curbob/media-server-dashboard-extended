@@ -559,7 +559,7 @@ def read_services():
     out = []
     for a in APPS:
         ms = reachable(a["host"], a["port"])
-        out.append({"name": a["name"], "key": a["key"], "kind": a["kind"], "url": a["web_url"], "up": ms is not None, "ms": None if ms is None else round(ms, 1)})
+        out.append({"name": a["name"], "key": a["key"], "url": a["web_url"], "up": ms is not None, "ms": None if ms is None else round(ms, 1)})
     state["services"] = out
 
 
@@ -1718,7 +1718,7 @@ def stats_payload(rng):
 def payload():
     upcoming = sorted(state["radarr"].get("upcoming", []) + state["sonarr"].get("upcoming", []), key=lambda u: u["when"])[:8]
     issues, hidden = visible_alerts()
-    services = [{"name": s["name"], "kind": s.get("kind"), "up": s["up"], "url": s.get("url") or "", "issues": [a for a in issues if a["source"] == s["name"]], "task": activity(s["name"]) if s["up"] else None, "showing": showing(s["name"]) if s["up"] else None, "next": up_next(s["name"]) if s["up"] else []} for s in state["services"]]
+    services = [{"name": s["name"], "up": s["up"], "url": s.get("url") or "", "issues": [a for a in issues if a["source"] == s["name"]], "task": activity(s["name"]) if s["up"] else None, "showing": showing(s["name"]) if s["up"] else None, "projector": s.get("key") == cinema_key(), "next": up_next(s["name"]) if s["up"] else []} for s in state["services"]]
     sab = state["sab"]
     if sab.get("queue"):  # downloads by the name they'll have in the library
         sab = {**sab, "queue": [{**q, "name": download_titles.get((q.get("id") or "").lower()) or tidy(q["title"])} for q in sab["queue"]]}

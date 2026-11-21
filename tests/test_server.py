@@ -717,6 +717,7 @@ class Plex(unittest.TestCase):
         self.assertEqual(server.activity("Plex"), "Streaming Severance S02E01 for Alex")
         self.assertEqual(server.media_server()[0], "plex")  # posters open in it
         self.assertEqual(server.media_state()["app"], "Plex")  # the statistics show it
+        self.assertEqual(server.cinema_key(), "plex")  # alone, Plex gets the projector desk
         self.assertEqual(set(self.tokens), {"tok"})
 
     def test_new_stream_reaches_the_feed_and_transcoding_shows(self):
@@ -746,6 +747,7 @@ class Plex(unittest.TestCase):
         server.state["cinema"] = {"enabled": True, "ok": True, "server": "Jellyfin", "streams": []}
         server.read_plex()
         self.assertEqual(server.state["cinema"]["server"], "Jellyfin")  # untouched
+        self.assertEqual(server.cinema_key(), "jellyfin")  # and the projector desk
         self.assertEqual(server.activity("Plex"), "Streaming Severance S02E01 for Alex")
 
     def test_wrong_token_and_connection_test(self):

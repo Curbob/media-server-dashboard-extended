@@ -761,9 +761,9 @@ const desks = DESKS.map(([x, z], i) => {
   return { screenMat, group: d };
 });
 
-// ---------- Plex's projector: on whichever desk the Plex worker sits at, it shows what is streaming ----------
-const PROJECTOR_KINDS = ['plex'];
-function makeProjector(d) {
+// ---------- the media server's projector: on whichever desk its worker sits at, it shows what is streaming ----------
+// With Jellyfin and Plex both set up, it goes to the one that fills the Home Cinema card (the server decides).
+function makeProjector(d, color) {
   const font = '-apple-system, Helvetica, sans-serif';
   const tex = canvasTexture(512, 300, (g, w, h, title = '') => {
     if (!title) { g.fillStyle = '#ece8e0'; g.fillRect(0, 0, w, h); return; }  // off: a plain screen
@@ -793,7 +793,7 @@ function makeProjector(d) {
   const g = group(0, 0, 0, d);
   // the projector on the right of the desk, its lens to the back
   rbox(0.34, 0.13, 0.3, 0.03, '#2a2a30', 0.85, 0.875, 0.04, g);
-  box(0.35, 0.025, 0.31, '#f2762e', 0.85, 0.875, 0.04, g);  // an orange band round the middle
+  box(0.35, 0.025, 0.31, color, 0.85, 0.875, 0.04, g);  // a band in the worker's colour round the middle
   for (let i = 0; i < 4; i++) box(0.012, 0.006, 0.16, '#55585f', 0.76 + i * 0.03, 0.942, 0.08, g);  // vent slots
   const lens = cyl(0.058, 0.058, 0.05, '#1b1b1f', 0.85, 0.875, -0.13, g); lens.rotation.x = Math.PI / 2;
   const glassMat = mat('#3a4560', { emissive: '#fff1c8', emissiveIntensity: 0, roughness: 0.2 });
@@ -1749,7 +1749,7 @@ function render(d) {
     const on = svc.up && !!svc.task;
     desk.screenMat.emissive.set(on ? p.s.color : '#000000');
     desk.screenMat.emissiveIntensity = on ? 1.1 : 0;
-    if (PROJECTOR_KINDS.includes(svc.kind) && desk.group) (desk.projector ||= makeProjector(desk.group)).set(on ? svc.showing || '' : '');
+    if (svc.projector && desk.group) (desk.projector ||= makeProjector(desk.group, p.s.color)).set(on ? svc.showing || '' : '');
     p.root.visible = svc.up;
     p.label.querySelector('.dot').className = 'dot ' + (!svc.up || bad ? 'error' : svc.issues.length ? 'warning' : '');
     const status = p.label.querySelector('span');
