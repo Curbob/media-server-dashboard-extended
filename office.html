@@ -761,9 +761,20 @@ const desks = DESKS.map(([x, z], i) => {
   return { screenMat, group: d };
 });
 
-// ---------- the media server's projector: on whichever desk its worker sits at, it shows what is streaming ----------
-// With Jellyfin and Plex both set up, it goes to the one that fills the Home Cinema card (the server decides).
-function makeProjector(d, color) {
+// ---------- the media server's projector: its worker brings it to whichever desk they sit at ----------
+// It shows up once they sit down and is gone when they leave, so the desk is free for anyone afterwards.
+// With Jellyfin and Plex both set up, it is the one that fills the Home Cinema card's (the server decides).
+let projector = null;
+function updateProjector() {
+  const p = Object.values(people).find((q) => q.projector);
+  const k = p && p.root.visible && p.where === 'desk' && !p.path.length && !p.panicking ? p.seat : null;
+  if (k == null || k >= DESKS.length) { if (projector) { projector.group.visible = false; projector.set(''); } return; }
+  projector ||= makeProjector(p.s.color);
+  if (projector.group.parent !== desks[k].group) desks[k].group.add(projector.group);
+  projector.group.visible = true;
+  projector.set(p.showing);
+}
+function makeProjector(color) {
   const font = '-apple-system, Helvetica, sans-serif';
   const tex = canvasTexture(512, 300, (g, w, h, title = '') => {
     if (!title) { g.fillStyle = '#ece8e0'; g.fillRect(0, 0, w, h); return; }  // off: a plain screen
@@ -790,7 +801,7 @@ function makeProjector(d, color) {
     const lh = size + 10;
     lines.forEach((l, i) => g.fillText(l, w / 2, 172 + (i - (lines.length - 1) / 2) * lh));
   });
-  const g = group(0, 0, 0, d);
+  const g = group(0, 0, 0);
   // the projector on the right of the desk, its lens to the back
   rbox(0.34, 0.13, 0.3, 0.03, '#2a2a30', 0.85, 0.875, 0.04, g);
   box(0.35, 0.025, 0.31, color, 0.85, 0.875, 0.04, g);  // a band in the worker's colour round the middle
@@ -822,6 +833,7 @@ function makeProjector(d, color) {
   g.add(beam);
   let shown = null;
   return {
+    group: g,
     set(title) {
       if (title === shown) return;
       shown = title;
@@ -1381,9 +1393,31 @@ function makePerson(name, i) {
 }
 
 const people = {};
+// Free seating: whoever has work takes a free desk and gives it back on their break, so a worker who is
+// idle or out blocks nobody. Seats 0-5 are the desks, 6-10 the places at the whiteboard, used only while
+// every desk is taken. A worker goes back to the desk they had last if it is free; otherwise free desks
+// are taken nearest the walkway from the break room first, so the walk is short.
+const DESK_ORDER = DESKS.map((_, k) => k).sort((a, b) => Math.abs(DESKS[a][0] - CORRIDOR_X) - Math.abs(DESKS[b][0] - CORRIDOR_X) || DESKS[a][1] - DESKS[b][1]);
+const BOARD_SEATS = BOARD_SPOTS.map((_, k) => DESKS.length + k);
+function assignSeats() {
+  const all = Object.values(people);
+  for (const p of all) {
+    if (p.seat != null && (!p.up || p.want === 'break')) { p.lastSeat = p.seat; p.seat = null; }  // a panic keeps the seat
+  }
+  const taken = new Set(all.filter((p) => p.seat != null).map((p) => p.seat));
+  for (const p of all.filter((q) => q.want === 'desk' && q.seat == null).sort((a, b) => a.i - b.i)) {
+    const order = [...(p.lastSeat < DESKS.length ? [p.lastSeat] : []), ...DESK_ORDER, ...BOARD_SEATS];
+    // more than eleven busy at once: the whiteboard places are shared (rare enough not to matter)
+    p.seat = order.find((k) => !taken.has(k)) ?? BOARD_SEATS[p.i % BOARD_SEATS.length];
+    taken.add(p.seat);
+  }
+}
+// The seat a worker has, or the one they are walking away from.
+const seatNo = (p) => p.seat ?? p.lastSeat ?? BOARD_SEATS[0];
 function seatOf(p) {
-  if (p.i >= DESKS.length) return BOARD_SPOTS[(p.i - DESKS.length) % BOARD_SPOTS.length];
-  const d = DESKS[p.i];
+  const k = seatNo(p);
+  if (k >= DESKS.length) return BOARD_SPOTS[k - DESKS.length];
+  const d = DESKS[k];
   return { at: [d[0], d[1] + 0.88], face: Math.PI, pose: 'type' };
 }
 function place(p, spot) { p.root.position.set(spot.at[0], 0, spot.at[1]); p.root.rotation.y = spot.face; p.pose = spot; }
@@ -1436,7 +1470,7 @@ function send(p, where, instant) {
     return;
   }
   const seat = seatOf(p);
-  const aisle = p.i < DESKS.length ? AISLES[DESKS[p.i][1] > 0 ? 1 : 0] : AISLES[0];
+  const aisle = aisleOf(p);
   const brk = breakOf(p);
   const toBreak = [[seat.at[0], aisle], [CORRIDOR, aisle], ...(brk.via || []), brk.at];
   p.path = (where === 'desk' ? [...toBreak.slice(0, -1).reverse(), spot.at] : toBreak).map(([x, z]) => new THREE.Vector3(x, 0, z));
@@ -1589,7 +1623,7 @@ function placeLabels() {
   const items = [];
   for (const p of Object.values(people)) {
     p.label.classList.toggle('running', !!p.panicking);
-    const pos = p.root.position, home = seatOf(p).at;
+    const pos = p.root.position, home = (p.seat ?? p.lastSeat) != null ? seatOf(p).at : breakOf(p).at;
     const [x, y] = p.root.visible ? project(pos.x, pos.y + 2.05, pos.z) : project(home[0], 1.2, home[1] + 0.1);
     items.push({ el: p.label, x, y });
   }
@@ -1677,7 +1711,7 @@ function setPanic(on) {
     }, 2200);
   }
 }
-const aisleOf = (p) => (p.i < DESKS.length ? AISLES[DESKS[p.i][1] > 0 ? 1 : 0] : AISLES[0]);
+const aisleOf = (p) => (seatNo(p) < DESKS.length ? AISLES[DESKS[seatNo(p)][1] > 0 ? 1 : 0] : AISLES[0]);
 const v3 = ([x, z]) => new THREE.Vector3(x, 0, z);
 function panicStep(p) {
   if (!p.root.visible) return;
@@ -1716,7 +1750,6 @@ function panicStep(p) {
 }
 
 // ---------- live data ----------
-const NO_DESK = { screenMat: new THREE.MeshStandardMaterial() };
 let first = true;
 // A newer release, an update running, or the result of the last one: shown on the dashboard and in the office.
 function updateBanner(d) {
@@ -1745,11 +1778,6 @@ function render(d) {
     const p = people[svc.name] || (people[svc.name] = makePerson(svc.name, Object.keys(people).length));
     const bad = svc.issues.some((a) => a.level === 'error');
     const issue = svc.issues.map((a) => a.message).join('\n');
-    const desk = desks[p.i] || NO_DESK;  // staff at the whiteboard have no screen to light up
-    const on = svc.up && !!svc.task;
-    desk.screenMat.emissive.set(on ? p.s.color : '#000000');
-    desk.screenMat.emissiveIntensity = on ? 1.1 : 0;
-    if (svc.projector && desk.group) (desk.projector ||= makeProjector(desk.group, p.s.color)).set(on ? svc.showing || '' : '');
     p.root.visible = svc.up;
     p.label.querySelector('.dot').className = 'dot ' + (!svc.up || bad ? 'error' : svc.issues.length ? 'warning' : '');
     const status = p.label.querySelector('span');
@@ -1759,11 +1787,18 @@ function render(d) {
     const badge = p.label.querySelector('.badge');
     badge.classList.toggle('show', svc.issues.length > 0);
     badge.classList.toggle('error', bad || !svc.up);
-    Object.assign(p, { up: svc.up, task: svc.task, issue, url: svc.url });
+    Object.assign(p, { up: svc.up, task: svc.task, issue, url: svc.url, projector: !!svc.projector, showing: svc.showing || '' });
     p.label.querySelector('.tag').classList.toggle('link', !!svc.url);
     p.want = null;
     if (!svc.up) { p.where = null; p.path = []; p.brk = null; return; }
     if (!panic && !p.panicking) p.want = svc.task ? 'desk' : 'break';
+  });
+  assignSeats();
+  desks.forEach((desk, k) => {  // a desk's screen shows its worker's colour while they have work
+    const p = Object.values(people).find((q) => q.seat === k);
+    const on = !!(p && p.up && p.task);
+    desk.screenMat.emissive.set(on ? p.s.color : '#000000');
+    desk.screenMat.emissiveIntensity = on ? 1.1 : 0;
   });
   planBreaks(first);
   first = false;
@@ -2150,6 +2185,7 @@ const clock = new THREE.Clock();
 function frame() {
   const dt = Math.min(clock.getDelta(), 0.1), t = clock.elapsedTime;
   for (const p of Object.values(people)) if (p.root.visible) animate(p, dt, t);
+  updateProjector();
   code.offset.y = (code.offset.y + dt * 0.08) % 1;
   rally(t);
   animateDataCenter(dt);
