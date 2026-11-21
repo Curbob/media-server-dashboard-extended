@@ -1144,7 +1144,9 @@ function setVpn(v) {
   guard.root.visible = here;
   guard.label.style.display = here ? '' : 'none';
   const where = v.provider ? ` · ${v.provider}${v.country ? ' (' + v.country + ')' : ''}` : v.via ? ` · ${v.via}` : '';
-  guard.label.querySelector('span').textContent = status === 'on' ? 'VPN on' + where : status === 'unset' ? 'VPN ? · set your home connection in Settings' : `VPN ? · ${v.why || 'no answer from the check'}`;
+  // the name only, like the other staff; what the check found shows when pointing at it
+  guard.label.querySelector('span').textContent = '';
+  guard.label.querySelector('.tag').dataset.tip = status === 'on' ? 'VPN on' + where : status === 'unset' ? 'VPN ? · set your home connection in Settings' : `VPN ? · ${v.why || 'no answer from the check'}`;
   guard.label.querySelector('.dot').className = 'dot ' + (status === 'on' ? '' : 'warning');
 }
 function animateBeacon(t) {
