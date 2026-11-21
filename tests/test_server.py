@@ -759,3 +759,87 @@ class Plex(unittest.TestCase):
         self.assertFalse(server.state["cinema"]["ok"])
         self.assertIsNone(server.activity("Plex"))
         self.assertFalse(server.wizard_test({"what": "app", "app": {"key": "plex", "url": self.app["url"], "api_key": "nope"}})["ok"])
+
+
+class VPNCheck(unittest.TestCase):
+    """The VPN check against a fake ipinfo.io: the home provider means down, any other means on."""
+
+    def setUp(self):
+        import threading
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        self.answer = {"ip": "203.0.113.7", "org": "AS209103 Proton AG", "country": "CH"}
+        outer = self
+
+        class H(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                if outer.answer is None:
+                    self.send_response(503); self.end_headers(); return
+                data = json.dumps(outer.answer).encode()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+        self.srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+        self.saved = (server.VPN_LOOKUP, dict(server.VPN), dict(server.state["vpn"]))
+        server.VPN_LOOKUP = f"http://127.0.0.1:{self.srv.server_port}/json"
+        server.VPN.clear(); server.VPN.update(enabled=True, home_asn="AS7922", home_provider="Comcast Cable Communications, LLC")
+        server.state["vpn"] = {"status": "unknown"}
+
+    def tearDown(self):
+        self.srv.shutdown()
+        server.VPN_LOOKUP = self.saved[0]
+        server.VPN.clear(); server.VPN.update(self.saved[1])
+        server.state["vpn"] = self.saved[2]
+
+    def test_lookup_keeps_provider_and_country_but_not_the_address(self):
+        self.assertEqual(server.vpn_lookup(), {"asn": "AS209103", "provider": "Proton AG", "country": "CH"})
+        server.read_vpn()
+        self.assertEqual(server.state["vpn"], {"status": "on", "provider": "Proton AG", "country": "CH"})
+        self.assertNotIn("203.0.113.7", json.dumps(server.state["vpn"]))
+
+    def test_home_provider_means_down_then_back(self):
+        server.read_vpn()
+        self.answer = {"ip": "198.51.100.4", "org": "AS7922 Comcast Cable Communications, LLC", "country": "US"}
+        server.read_vpn()
+        self.assertEqual(server.state["vpn"]["status"], "down")
+        self.assertTrue(any(a["source"] == "VPN" and a["level"] == "error" for a in server.alerts()))
+        last = server.LIVE.recent(2)
+        self.assertTrue(any(e["source"] == "VPN" and e["level"] == "error" and "home connection" in e["text"] for e in last), last)
+        self.answer = {"org": "AS9009 M247 Europe SRL", "country": "NL"}  # another Proton server, another owner: still on
+        server.read_vpn()
+        self.assertEqual(server.state["vpn"]["status"], "on")
+        self.assertTrue(any(e["source"] == "VPN" and e["kind"] == "recover" for e in server.LIVE.recent(2)))
+        self.assertFalse(any(a["source"] == "VPN" for a in server.alerts()))
+
+    def test_typed_provider_matches_part_of_the_name(self):
+        server.VPN.update(home_asn="", home_provider="comcast")
+        self.answer = {"org": "AS7922 Comcast Cable Communications, LLC", "country": "US"}
+        server.read_vpn()
+        self.assertEqual(server.state["vpn"]["status"], "down")
+        self.assertEqual(server.vpn_verdict({"asn": "AS1", "provider": "Proton AG"}, "", "comcast"), "on")
+        self.assertEqual(server.vpn_verdict({"asn": "AS1", "provider": "Proton AG"}, "", ""), "unset")
+
+    def test_no_answer_is_unknown_and_switched_off_is_off(self):
+        self.answer = None
+        server.read_vpn()
+        self.assertEqual(server.state["vpn"]["status"], "unknown")
+        self.assertFalse(any(a["source"] == "VPN" for a in server.alerts()))
+        server.VPN["enabled"] = False
+        server.read_vpn()
+        self.assertEqual(server.state["vpn"], {"status": "off"})
+
+    def test_settings_check_now_and_saving(self):
+        import unittest.mock
+        self.assertEqual(server.wizard_test({"what": "vpn"}), {"ok": True, "asn": "AS209103", "provider": "Proton AG", "country": "CH"})
+        base = {"user": "admin", "password": "long-enough-pw"}
+        with unittest.mock.patch.dict(server.CONFIG, {}, clear=True):
+            c = server.build_config({**base, "vpn": {"enabled": True, "home_asn": "as7922", "home_provider": " Comcast  Cable "}})
+            self.assertEqual(c["vpn"], {"enabled": True, "home_asn": "AS7922", "home_provider": "Comcast Cable"})
+            self.assertEqual(server.build_config({**base, "vpn": {"enabled": True, "home_asn": "x; rm", "home_provider": "Spectrum"}})["vpn"]["home_asn"], "")
+            with self.assertRaises(ValueError):
+                server.build_config({**base, "vpn": {"enabled": True}})  # on, but no home connection

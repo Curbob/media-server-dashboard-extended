@@ -939,7 +939,8 @@ const dcSign = canvasTexture(512, 96, (g, w, h) => {
   g.fillText('DATA CENTER', w / 2, h / 2 + 2);
 });
 rbox(2.3, 0.45, 0.06, 0.03, '#1d2440', DCX, 1.95, DC.z0);
-plane(2.2, 0.41, new THREE.MeshStandardMaterial({ map: dcSign, emissiveMap: dcSign, emissive: '#ffffff', emissiveIntensity: 0.6 }), DCX, 1.95, DC.z0 + 0.035);
+const dcSignMat = new THREE.MeshStandardMaterial({ map: dcSign, emissiveMap: dcSign, emissive: '#ffffff', emissiveIntensity: 0.6 });  // pulses red while the VPN is down
+plane(2.2, 0.41, dcSignMat, DCX, 1.95, DC.z0 + 0.035);
 for (const sx of [-0.9, 0.9]) cyl(0.012, 0.012, 0.36, '#9aa0ad', DCX + sx, 1.82 + 0.2, DC.z0);
 
 // racks against the left wall, fronts facing the room
@@ -1079,10 +1080,11 @@ function updateDataCenter(d) {
     const key = JSON.stringify(drives[i] || null);
     if (m.g.visible && key !== m.key) { m.key = key; m.tex.redraw(drives[i]); }
   });
-  const issues = d.alerts.filter((a) => ['CPU', 'Memory', 'Network', 'Drives'].includes(a.source));
+  const issues = d.alerts.filter((a) => ['CPU', 'Memory', 'Network', 'Drives', 'VPN'].includes(a.source));
   dcTag.querySelector('.dot').className = 'dot ' + (issues.some((a) => a.level === 'error') ? 'error' : issues.length ? 'warning' : '');
   dcTag.querySelector('b').textContent = s.host || 'Proxmox host';
-  dcTag.querySelector('span').textContent = `CPU ${dcState.cpu}% · Mem ${Math.round(dcState.mem)}% · ↓ ${fmtMbit(last(h.rx))}`;
+  const vpnMark = { on: ' · VPN ✓', down: ' · VPN ✗', unknown: ' · VPN ?', unset: ' · VPN ?' }[(d.vpn || {}).status] || '';
+  dcTag.querySelector('span').textContent = `CPU ${dcState.cpu}% · Mem ${Math.round(dcState.mem)}% · ↓ ${fmtMbit(last(h.rx))}${vpnMark}`;
   if (d.proxmox && d.proxmox.ok === false) {
     // the host is gone: every rack segment glows red and the tag says so
     for (const r of racks) r.segs.forEach((seg) => { seg.material = segLit[segLit.length - 1]; });
@@ -1108,6 +1110,51 @@ const dcTag = document.createElement('div');
 dcTag.className = 'label';
 dcTag.innerHTML = '<div class="tag"><i class="dot"></i><b>Proxmox host</b><span></span><i class="badge" tabindex="0">!</i></div>';
 $('labels').append(dcTag);
+
+// ---------- VPN check: a security guard at the data center door while the traffic goes out through the VPN ----------
+// When it is down the guard is gone and a red light spins on the corner of the glass wall. Off in the settings: neither.
+const beacon = group(DC.x1, 1.64, DC.z0);
+cyl(0.15, 0.17, 0.09, '#3a3f52', 0, 0.045, 0, beacon);
+const beaconMat = mat('#8a3a34', { emissive: '#ff2a1a', emissiveIntensity: 0, transparent: true, opacity: 0.92, roughness: 0.3 });
+add(new THREE.SphereGeometry(0.16, 28, 14, 0, Math.PI * 2, 0, Math.PI / 2), beaconMat, 0, 0.09, 0, beacon).castShadow = false;
+const beaconSpin = group(0, 0.16, 0, beacon);
+box(0.2, 0.07, 0.02, mat('#ffd0c0', { emissive: '#ff6040', emissiveIntensity: 2 }), 0.06, 0, 0, beaconSpin).castShadow = false;
+const beaconLight = new THREE.PointLight('#ff3020', 0, 8);
+beaconLight.position.set(0.3, 0.3, 0.3);
+beacon.add(beaconLight);
+beacon.visible = false;
+const GUARD_SPOT = { at: [DC.x1 + 0.55, DC.z0 + 0.6], face: 0.45, pose: 'guard' };
+const vpnState = { status: 'off' };
+let guard = null;
+function setVpn(v) {
+  const status = (v && v.status) || 'off';
+  vpnState.status = status;
+  beacon.visible = status !== 'off';
+  if (status === 'off') { if (guard) { guard.root.visible = false; guard.label.style.display = 'none'; } return; }
+  if (!guard) {
+    guard = makePerson('Security', 0);
+    guard.guard = true;
+    delete guard.root.userData.person;  // clicking the guard opens nothing
+    rbox(0.07, 0.08, 0.02, 0.01, '#f2c94c', 0.11, 1.03, 0.17, guard.body).castShadow = false;  // the badge
+    place(guard, GUARD_SPOT);
+    guard.label.querySelector('.tag').removeAttribute('data-person');
+  }
+  const here = status !== 'down';
+  guard.root.visible = here;
+  guard.label.style.display = here ? '' : 'none';
+  const where = v.provider ? ` · ${v.provider}${v.country ? ' (' + v.country + ')' : ''}` : '';
+  guard.label.querySelector('span').textContent = status === 'on' ? 'VPN on' + where : status === 'unset' ? 'VPN ? · set your home connection in Settings' : 'VPN ? · no answer from the check';
+  guard.label.querySelector('.dot').className = 'dot ' + (status === 'on' ? '' : 'warning');
+}
+function animateBeacon(t) {
+  const down = vpnState.status === 'down';
+  beaconSpin.visible = down;
+  beaconSpin.rotation.y = t * 9;
+  beaconMat.emissiveIntensity = down ? 1.4 + Math.sin(t * 9) * 0.8 : 0;
+  beaconLight.intensity = down ? 9 + Math.sin(t * 9) * 7 : 0;
+  dcSignMat.emissive.set(down && Math.sin(t * 9) > 0 ? '#ff3020' : '#ffffff');
+  dcSignMat.emissiveIntensity = down ? 1.2 : 0.6;
+}
 
 function updateBoard(d) {
   updateDataCenter(d);
@@ -1162,6 +1209,7 @@ const STAFF = {
   'Home Cinema': { color: '#5fcdb4', trim: '#ffffff', pants: '#3a4060', hair: '#3b2a20', style: 'short', skin: '#f1d3b8', extra: 'frames', eye: '#6b4a2f', quips: ['Nobody watching. Popcorn time 🍿', 'Library looks great', 'Waiting for movie night'] },
   Jellyfin: { color: '#aa5cc3', trim: '#00a4dc', pants: '#2f3550', hair: '#2b1d16', style: 'long', skin: '#e8b994', extra: 'headphones', eye: '#4a3020', quips: ['Nobody is watching right now', 'Library scan done ✓', 'Popcorn is ready 🍿'] },
   Plex: { color: '#f2762e', trim: '#2a2a30', pants: '#2a2a30', hair: '#e9e4da', style: 'short', skin: '#c68a62', extra: 'bowtie', eye: '#2f5d8a', quips: ['Nobody is watching right now', 'Posters all fetched ✓', 'Waiting for movie night 🍿'] },
+  Security: { color: '#2f4a7a', trim: '#f2c94c', pants: '#1f2433', hair: '#1f1a17', style: 'short', skin: '#e0b48f', extra: 'cap', eye: '#3b2a1a', quips: ['VPN is up, all clear'] },
   Radarr: { color: '#f2c94c', trim: '#c79a1a', pants: '#2f3550', hair: '#1f1a17', style: 'curly', skin: '#a9774f', extra: 'glasses', eye: '#3b2a1a', quips: ['No movies to grab', 'Wanted list checked ✓', 'Coffee first ☕'] },
   Sonarr: { color: '#6fb3f2', trim: '#ffffff', pants: '#4a3f35', hair: '#7a4a24', style: 'long', skin: '#f3d6c1', extra: 'headphones', eye: '#3f7fbf', quips: ['No new episodes yet', 'All caught up', 'Your serve!'] },
   Bazarr: { color: '#a98cf0', trim: '#f2c94c', pants: '#2c2c3a', hair: '#e2c26b', style: 'bun', skin: '#e8b994', extra: 'bowtie', eye: '#3f9a66', quips: ['Subtitles all done', 'Nothing to translate', 'Mmm, coffee'] },
@@ -1492,7 +1540,7 @@ function animate(p, dt, t) {
   p.shoulderL.rotation.z = p.shoulderR.rotation.z = 0;
   p.elbowL.rotation.x = p.elbowR.rotation.x = -0.15;
   head.rotation.set(0, Math.sin(t * 0.4 + p.phase) * 0.15, 0);
-  panicStep(p);
+  if (!p.guard) panicStep(p);
 
   if (p.path.length) {
     const next = p.path[0], pos = root.position;
@@ -1542,6 +1590,11 @@ function animate(p, dt, t) {
     p.elbowR.rotation.x = -0.5;
     p.shoulderL.rotation.z = 0.35; p.elbowL.rotation.x = -0.9;
     head.rotation.set(-0.1, Math.sin(t * 0.6 + p.phase) * 0.1, 0);
+  } else if (pose === 'guard') {
+    p.shoulderL.rotation.x = p.shoulderR.rotation.x = 0.45;
+    p.shoulderL.rotation.z = 0.12; p.shoulderR.rotation.z = -0.12;
+    p.elbowL.rotation.x = p.elbowR.rotation.x = -0.35;
+    head.rotation.set(0, Math.sin(t * 0.35 + p.phase) * 0.55, 0);
   } else if (pose === 'pingpong') {
     const hit = Math.sin(t * 5 + (p.pose.at[0] > 6 ? Math.PI : 0));
     p.shoulderL.rotation.x = -0.3;
@@ -1628,6 +1681,7 @@ function placeLabels() {
     items.push({ el: p.label, x, y });
   }
   items.push({ el: dcTag, ...xy(project(-8.0, 1.75, 7.05)) });
+  if (guard && guard.root.visible) { const g = guard.root.position; items.push({ el: guard.label, ...xy(project(g.x, 2.05, g.z)) }); }
   if (pileLabel.textContent) items.push({ el: pileLabel, ...xy(project(0.0, 1.1, 0.95)) });
   const W = host.clientWidth, H = host.clientHeight, measure = labelFrame++ % 12 === 0;
   for (const it of items) if (measure || !it.el._w) { it.el._w = it.el.offsetWidth; it.el._h = it.el.offsetHeight; }
@@ -1794,6 +1848,7 @@ function render(d) {
     if (!panic && !p.panicking) p.want = svc.task ? 'desk' : 'break';
   });
   assignSeats();
+  setVpn(d.vpn);
   desks.forEach((desk, k) => {  // a desk's screen shows its worker's colour while they have work
     const p = Object.values(people).find((q) => q.seat === k);
     const on = !!(p && p.up && p.task);
@@ -2018,7 +2073,7 @@ function addMsg(e) {
 }
 function say(e) {
   const p = people[e.source];
-  const label = p ? p.label : e.source === 'Proxmox' ? dcTag : null;
+  const label = p ? p.label : e.source === 'Proxmox' ? dcTag : e.source === 'VPN' ? (guard && guard.root.visible ? guard.label : dcTag) : null;
   if (!label || (p && !p.root.visible)) return;
   label.querySelectorAll('.say').forEach((x) => x.remove());
   const b = document.createElement('div');
@@ -2186,6 +2241,8 @@ function frame() {
   const dt = Math.min(clock.getDelta(), 0.1), t = clock.elapsedTime;
   for (const p of Object.values(people)) if (p.root.visible) animate(p, dt, t);
   updateProjector();
+  if (guard && guard.root.visible) animate(guard, dt, t);
+  animateBeacon(t);
   code.offset.y = (code.offset.y + dt * 0.08) % 1;
   rally(t);
   animateDataCenter(dt);

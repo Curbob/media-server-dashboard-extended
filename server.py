@@ -110,6 +110,7 @@ STORAGES = CONFIG.get("storages") or []  # empty: every active storage on the no
 PVE = CONFIG.get("proxmox") or {}
 HOME = CONFIG.get("home") or {}
 GAME = CONFIG.get("game") or {}
+VPN = CONFIG.get("vpn") or {}  # {"enabled", "home_asn", "home_provider"}: see the VPN check
 WEBHOOK_TOKEN = CONFIG.get("webhook_token") or ""
 settings_updates = lambda: CONFIG.get("updates") or {}
 LIVE = livemod.Live(DATA, enabled=GAME.get("enabled", True))
@@ -205,7 +206,7 @@ KEEP = 150          # samples kept: 5 minutes
 history = {k: deque(maxlen=KEEP) for k in ("t", "cpu", "mem", "rx", "tx", "disk", "sab")}
 state = {"system": {}, "services": [], "cinema": {"enabled": False, "profiles": [], "streams": [], "watched": [], "missing_drives": []},
          "sab": {"ok": False}, "radarr": {"ok": False}, "sonarr": {"ok": False}, "prowlarr": {"ok": False}, "bazarr": {"ok": False},
-         "jellyfin": {"ok": None}, "plex": {"ok": None},  # not asked yet (the alert check runs before the first read)
+         "jellyfin": {"ok": None}, "plex": {"ok": None}, "vpn": {"status": "unknown"},  # not asked yet (the alert check runs before the first read)
          "custom": {}, "activity": {}, "network": {}, "disks": [], "proxmox": {"ok": None, "guests": []}}
 for _k in BUILTIN:  # apps that aren't set up say so, instead of looking broken
     if _k not in BY_KIND and _k not in DL_KEYS:
@@ -1004,6 +1005,49 @@ def read_plex():
              info={"version": root.get("version"), "server": root.get("friendlyName"), "library": px_slow.get("library") or {}})
 
 
+# ---------- VPN check: does the traffic go out through the home connection? ----------
+# Works for any VPN on the dashboard's machine or the router (Docker containers go out the same way): an IP
+# lookup says which provider the traffic leaves through. The home provider, learned once in the settings,
+# means the VPN is down; any other means it is on. Only the provider and country are kept, never the address.
+VPN_LOOKUP = os.environ.get("MSD_VPN_LOOKUP") or "https://ipinfo.io/json"
+
+
+def vpn_lookup():
+    """Which provider the traffic leaves through: {"asn": "AS209103", "provider": "Proton AG", "country": "CH"}."""
+    info = http_get(VPN_LOOKUP, {"User-Agent": "media-server-dashboard"}, timeout=8)
+    asn, _, provider = str(info.get("org") or "").partition(" ")
+    if not re.fullmatch(r"AS\d+", asn):  # no ASN in front: the whole thing is the name
+        asn, provider = "", str(info.get("org") or "")
+    return {"asn": asn, "provider": provider.strip()[:80], "country": str(info.get("country") or "")[:2]}
+
+
+def vpn_verdict(look, home_asn, home_provider):
+    """"down" when the traffic leaves through the home provider, "on" otherwise, "unset" before the home one is known."""
+    if not home_asn and not home_provider:
+        return "unset"
+    if home_asn:
+        return "down" if look["asn"] == home_asn else "on"
+    return "down" if home_provider.strip().lower() in look["provider"].lower() else "on"  # typed: a part of the name
+
+
+def read_vpn():
+    if not VPN.get("enabled"):
+        state["vpn"] = {"status": "off"}  # the check is switched off
+        return
+    before = state["vpn"].get("status")
+    try:
+        look = vpn_lookup()
+    except FAIL:
+        state["vpn"] = {**state["vpn"], "status": "unknown"}
+        return
+    status = vpn_verdict(look, VPN.get("home_asn") or "", VPN.get("home_provider") or "")
+    state["vpn"] = {"status": status, "provider": look["provider"], "country": look["country"]}
+    if status == "down" and before != "down":
+        LIVE.emit("VPN", "health", f"is down: traffic is leaving through your home connection ({look['provider']})", "error")
+    elif status == "on" and before == "down":
+        LIVE.emit("VPN", "recover", f"is back on: traffic goes out through {look['provider']}", "success")
+
+
 def read_bazarr():
     a = BY_KIND.get("bazarr")
     if not a:
@@ -1465,6 +1509,8 @@ def app_state(key):
 def alerts():
     out = []
     add = lambda level, source, msg: out.append({"level": level, "source": source, "message": msg})
+    if state["vpn"].get("status") == "down":
+        add("error", "VPN", f"VPN is down: traffic is leaving through your home connection ({state['vpn'].get('provider') or 'home'})")
     if not PVE:
         if state["system"].get("source") != "local":  # in Docker the machine's own numbers stand in
             add("warning", "Proxmox", "Not set up yet, so there are no host stats. Open the settings to add it.")
@@ -1998,7 +2044,9 @@ def public_config():
                  "start": bool(HOME.get("start")), "tiles": HOME.get("tiles") or []},
         # The webhook address is a secret too, but whoever may open the settings needs it to set up the apps.
         "webhook": {"token": WEBHOOK_TOKEN if SETUP_DONE else "", "set": bool(WEBHOOK_TOKEN)},
-        "game": {"enabled": GAME.get("enabled", True)}, "landing": "dashboard" if c.get("landing") == "dashboard" else "office",
+        "game": {"enabled": GAME.get("enabled", True)},
+        "vpn": {"enabled": bool(VPN.get("enabled")), "home_asn": VPN.get("home_asn", ""), "home_provider": VPN.get("home_provider", "")},
+        "landing": "dashboard" if c.get("landing") == "dashboard" else "office",
         "updates": update_info() if SETUP_DONE else {"managed": bool(updater_conf()), "version": VERSION},
     }
 
@@ -2075,6 +2123,8 @@ def wizard_test(req):
                 return {"ok": True, "version": st.get("version"), "app": st.get("appName")}
             app_get(app, app["health_path"], raw=True)
             return {"ok": True}
+        if what == "vpn":
+            return {"ok": True, **vpn_lookup()}
         if what == "hook":
             LIVE.emit(req.get("source") or "Dashboard", "test", "Test from the settings: the live feed works 👋", "info")
             return {"ok": True}
@@ -2105,6 +2155,12 @@ def build_config(req):
     c = {k: v for k, v in old.items() if k in ("port", "bind", "trusted_proxies", "caddy_site_file", "caddy_managed", "internet_check", "updates")}
     c["webhook_token"] = secrets.token_urlsafe(24) if req.get("new_webhook_token") or not old.get("webhook_token") else old["webhook_token"]
     c["game"] = {"enabled": bool((req.get("game") or {}).get("enabled", True))}
+    v = req.get("vpn") or {}
+    asn = (v.get("home_asn") or "").strip().upper()
+    c["vpn"] = {"enabled": bool(v.get("enabled")), "home_asn": asn if re.fullmatch(r"AS\d{1,10}", asn) else "",
+                "home_provider": re.sub(r"\s+", " ", v.get("home_provider") or "").strip()[:80]}
+    if c["vpn"]["enabled"] and not (c["vpn"]["home_asn"] or c["vpn"]["home_provider"]):
+        raise ValueError("VPN check: set your home connection (button) or type your home internet provider")
     c["title"] = (req.get("title") or "").strip()[:80] or "Media Server Dashboard"
     c["landing"] = "dashboard" if req.get("landing") == "dashboard" else "office"  # what opens after signing in
 
@@ -2701,6 +2757,7 @@ if __name__ == "__main__":
         looped(10, watch_alerts)
         looped(10, record_stats)
         looped(30, read_network)
+        looped(120, read_vpn)  # ipinfo.io's free use is 50,000 a month: this is about 22,000
         if HOME.get("enabled") and HOME.get("tiles"):
             looped(10, read_home)
         if PVE:
